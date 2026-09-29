@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated at runtime (rebuilt on every run)
+data/chroma_db/
+
+# Your PDFs (remove this line if you want to commit them)
+data/pdfs/*.pdf
+
+# Hugging Face model cache / OS / editor
+.DS_Store
+.vscode/
+
+.streamlit/secrets.toml

@@ -1,0 +1,12 @@
+# Packages imported by the project (taken from the notebook's !pip install cells).
+pdfplumber
+sentence-transformers
+chromadb
+openai
+numpy
+python-dotenv
+streamlit>=1.40
+
+# The notebook force-reinstalls this exact version (Colab workaround). Kept as-is.
+# Pillow 10.4.0 has wheels for Python 3.8-3.12, so use Python 3.10-3.12.
+Pillow==10.4.0

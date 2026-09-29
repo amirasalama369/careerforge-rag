@@ -1,0 +1,21 @@
+# CareerForge -- project-level Streamlit settings (picked up when launched from the project root).
+
+[server]
+# Streamlit's dev file-watcher introspects every imported module, including optional
+# lazily-loaded submodules of `transformers` that need `torchvision`, and logs a
+# ModuleNotFoundError for them. The app does not use hot-reload in production, so the
+# watcher is switched off instead of installing unrelated packages.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# Pin the light theme so Streamlit's own widgets do not flip to light-on-dark text when
+# the visitor's OS/browser is in dark mode (the custom design is light on the main area).
+base = "light"
+primaryColor = "#5b3df5"
+backgroundColor = "#f5f7fe"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1f2347"
+font = "sans serif"
