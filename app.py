@@ -379,6 +379,7 @@ def make_session() -> dict:
         "id": uuid.uuid4().hex,
         "title": None,
         "messages": [],  # [{"role": "user"|"assistant", "content": str, "error": bool}]
+        "busy": None,  # question currently being answered by this session's Conversation, if any
         "conv": Conversation(retriever=retriever, generator=generator, top_k=top_k),
     }
 
@@ -394,16 +395,24 @@ def active() -> dict:
 
 
 def cb_new_chat() -> None:
+    """Open a brand-new, empty CHAT (not Home) with its own Conversation (shared cached backend)."""
     cur = active()
-    if cur["messages"]:  # keep the finished chat in (session-only) history
-        s = make_session()
-        st.session_state.sessions.append(s)
-        st.session_state.active_id = s["id"]
+    fresh = make_session()
+    # A chat that has messages -- or an answer still being generated -- is kept in history.
+    if cur["messages"] or cur["busy"]:
+        st.session_state.sessions.append(fresh)
+    else:
+        # Current chat is empty: swap it for a clean one instead of piling up empty sessions.
+        # A NEW object (not a reset) so a stale, still-running answer can never land in it.
+        st.session_state.sessions = [fresh if x is cur else x for x in st.session_state.sessions]
+    st.session_state.active_id = fresh["id"]
+    st.session_state.page = "chat"
     st.session_state.show_history = False
     st.session_state.pending = None
 
 
 def cb_home() -> None:
+    st.session_state.page = "home"
     st.session_state.show_history = False
 
 
@@ -413,11 +422,27 @@ def cb_toggle_history() -> None:
 
 def cb_open(session_id: str) -> None:
     st.session_state.active_id = session_id
+    st.session_state.page = "chat"
     st.session_state.pending = None
 
 
-def cb_ask(question: str) -> None:
+def route_question(question: str) -> None:
+    """A question asked from Home (example card or Home input) always opens a chat.
+
+    If the active session already has a conversation, start a fresh one -- otherwise the
+    question would silently continue an old chat the user is not looking at.
+    """
+    cur = active()
+    if cur["messages"] or cur["busy"]:
+        fresh = make_session()
+        st.session_state.sessions.append(fresh)
+        st.session_state.active_id = fresh["id"]
+    st.session_state.page = "chat"
     st.session_state.pending = question
+
+
+def cb_ask(question: str) -> None:
+    route_question(question)
 
 
 def short_title(text: str, n: int = 38) -> str:
@@ -462,10 +487,9 @@ def show_message(msg: dict) -> None:
 
 def answer_question(sess: dict, question: str) -> None:
     """Send the question through the existing Conversation.ask()."""
-    sess["messages"].append({"role": "user", "content": question})
-    if sess["title"] is None:
-        sess["title"] = short_title(question)
-    show_message(sess["messages"][-1])
+    user_msg = {"role": "user", "content": question}
+    show_message(user_msg)
+    sess["busy"] = question
 
     with st.chat_message("assistant", avatar=":material/auto_awesome:"):
         slot = st.empty()
@@ -476,17 +500,24 @@ def answer_question(sess: dict, question: str) -> None:
         except Exception:  # UI boundary: never leak internals to the client
             log.exception("Conversation.ask failed")
             reply = {"role": "assistant", "content": FRIENDLY_ERROR, "error": True}
+        # Commit the question and its reply together, BEFORE any further Streamlit call.
+        # If the user clicked New Chat while this was running, Streamlit stops this script at
+        # the next st.* call -- so the session can never keep a question without its answer,
+        # and the UI stays in step with the Conversation's own history.
+        sess["messages"] += [user_msg, reply]
+        if sess["title"] is None:
+            sess["title"] = short_title(question)
+        sess["busy"] = None
         if reply["error"]:
             slot.markdown(f'<span class="cf-err">{html.escape(reply["content"])}</span>', unsafe_allow_html=True)
         else:
             slot.markdown(render_answer(reply["content"]), unsafe_allow_html=True)
-    sess["messages"].append(reply)
 
 
 # --------------------------------------------------------------------------- #
 # Layout pieces
 # --------------------------------------------------------------------------- #
-def sidebar(on_home: bool) -> None:
+def sidebar(page: str, chat_is_empty: bool) -> None:
     with st.sidebar:
         st.markdown(
             f'<div class="cf-brand">{LOGO_SVG}<div><div class="cf-wordmark">Career<b>Forge</b></div>'
@@ -494,9 +525,9 @@ def sidebar(on_home: bool) -> None:
             unsafe_allow_html=True,
         )
         st.button("Home", key="nav_home", icon=":material/home:", on_click=cb_home,
-                  type="primary" if on_home else "secondary", use_container_width=True)
+                  type="primary" if page == "home" else "secondary", use_container_width=True)
         st.button("New Chat", key="nav_new", icon=":material/chat_bubble:", on_click=cb_new_chat,
-                  type="secondary", use_container_width=True)
+                  type="primary" if (page == "chat" and chat_is_empty) else "secondary", use_container_width=True)
         st.button("Chat History", key="nav_hist", icon=":material/history:", on_click=cb_toggle_history,
                   type="primary" if st.session_state.show_history else "secondary", use_container_width=True)
 
@@ -586,6 +617,7 @@ def main() -> None:
             st.session_state.active_id = first["id"]
             st.session_state.show_history = False
             st.session_state.pending = None
+            st.session_state.page = "home"  # "home" = landing page, "chat" = a conversation (may be empty)
     except Exception:
         log.exception("Backend initialisation failed")
         st.markdown(f'<div class="cf-top"><b>CareerForge</b><span>{html.escape(UNAVAILABLE)}</span></div>',
@@ -595,16 +627,22 @@ def main() -> None:
     sess = active()
     pending = st.session_state.pending
     st.session_state.pending = None
-    in_chat = bool(sess["messages"]) or bool(pending)
+    page = st.session_state.page  # explicit navigation state -- NOT inferred from messages
 
-    sidebar(on_home=not st.session_state.show_history)
+    sidebar(page=page, chat_is_empty=not sess["messages"])
     top_bar()
 
-    if in_chat:
-        # Pinned to the bottom of the page while a conversation is running.
+    if page == "chat":
+        # Pinned to the bottom of the page while in a conversation (new/empty ones included).
         prompt = st.chat_input(PLACEHOLDER)
         if prompt and prompt.strip():
             pending = prompt.strip()
+        if not sess["messages"] and not pending:
+            st.markdown(
+                f'<div class="cf-chat-head">{icon("spark", 18)}New conversation &middot; '
+                f'ask CareerForge anything about your career below.</div>',
+                unsafe_allow_html=True,
+            )
         for m in sess["messages"]:
             show_message(m)
         if pending:
@@ -618,7 +656,7 @@ def main() -> None:
                 # Inline on the welcome screen (matches the reference layout).
                 prompt = st.chat_input(PLACEHOLDER)
                 if prompt and prompt.strip():
-                    st.session_state.pending = prompt.strip()
+                    route_question(prompt.strip())
                     st.rerun()
             with right:
                 right_rail()
